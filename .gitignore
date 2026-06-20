@@ -1,0 +1,17 @@
+venv/
+__pycache__/
+*.pyc
+
+.env
+
+.idea/
+.vscode/
+
+*.parquet
+*.log
+
+.airflow/
+
+spark-warehouse/
+
+.DS_Store
