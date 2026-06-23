@@ -15,3 +15,5 @@ __pycache__/
 spark-warehouse/
 
 .DS_Store
+
+database/.ipynb_checkpoints/
