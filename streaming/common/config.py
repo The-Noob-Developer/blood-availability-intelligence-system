@@ -9,3 +9,11 @@ ALLOCATION_TOPIC = "allocations"
 INVENTORY_TOPIC = "inventory_updates"
 
 ALERT_TOPIC = "alerts"
+
+# PostgreSQL
+
+DB_HOST = "localhost"
+DB_PORT = 5432
+DB_NAME = "blood_availability"
+DB_USER = "postgres"
+DB_PASSWORD = "postgres"
