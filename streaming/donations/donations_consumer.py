@@ -5,8 +5,7 @@ from streaming.common.config import KAFKA_BROKER, DONATION_TOPIC
 from dotenv import load_dotenv
 load_dotenv()
 import os
-# print("ACCOUNT:", os.getenv("SNOWFLAKE_ACCOUNT"))
-# print("USER:", os.getenv("SF_USER"))
+
 ACCOUNT = os.getenv("SF_ACCOUNT")
 USER = os.getenv("SF_USER")
 PASSWORD = os.getenv("SF_PASSWORD")
@@ -34,6 +33,7 @@ consumer = KafkaConsumer(
     bootstrap_servers=KAFKA_BROKER,
     auto_offset_reset="latest",
     value_deserializer=lambda m: json.loads(m.decode("utf-8"))
+    # Decode Binary to string -> String to JSON
 )
 
 print("Waiting for message...")
@@ -42,9 +42,11 @@ print("Waiting for message...")
 message = next(consumer)
 data = message.value
 
-# Don't insert auto-generated columns
-data.pop("event_id", None)
-data.pop("event_time", None)
+if data.get("event_id") is None:
+    data.pop("event_id", None)
+
+if data.get("event_time") is None:
+    data.pop("event_time", None)
 
 columns = ", ".join(col.upper() for col in data.keys())
 placeholders = ", ".join(["%s"] * len(data))
