@@ -4,4 +4,4 @@ class DonationRequest(BaseModel):
     donor_id: int
     blood_bank_id: int
     blood_group: str
-    units: int
+    units_donated: int
