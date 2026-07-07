@@ -36,31 +36,47 @@ consumer = KafkaConsumer(
     # Decode Binary to string -> String to JSON
 )
 
-print("Waiting for message...")
+print("Waiting for messages...")
 
-# Receive only one message
-message = next(consumer)
-data = message.value
+try:
+    for message in consumer:
+        data = message.value
 
-if data.get("event_id") is None:
-    data.pop("event_id", None)
+        columns = ", ".join(col.upper() for col in data.keys())
+        placeholders = ", ".join(["%s"] * len(data))
 
-if data.get("event_time") is None:
-    data.pop("event_time", None)
+        insert_query = f"""
+        INSERT INTO DONATION_EVENT ({columns})
+        VALUES ({placeholders})
+        """
 
-columns = ", ".join(col.upper() for col in data.keys())
-placeholders = ", ".join(["%s"] * len(data))
+        cursor.execute(insert_query, tuple(data.values()))
 
-query = f"""
-INSERT INTO DONATION_EVENT ({columns})
-VALUES ({placeholders})
-"""
+        update_query = """
+        UPDATE BLOOD_INVENTORY
+        SET UNITS_AVAILABLE = UNITS_AVAILABLE + %s
+        WHERE BLOOD_BANK_ID = %s
+          AND BLOOD_GROUP = %s;
+        """
 
-cursor.execute(query, tuple(data.values()))
-conn.commit()
+        cursor.execute(
+            update_query,
+            (
+                data["units_donated"],
+                data["blood_bank_id"],
+                data["blood_group"],
+            ),
+        )
 
-print("Inserted successfully")
+        conn.commit()
 
-# cursor.close()
-# conn.close()
-# consumer.close()
+        print(f"Processed Donation ID: {data['donor_id']}")
+
+except KeyboardInterrupt:
+    print("\nStopping consumer...")
+
+finally:
+    cursor.close()
+    conn.close()
+    consumer.close()
+    print("Consumer closed.")
