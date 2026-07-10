@@ -8,17 +8,19 @@ class RequestEvent:
     user_id: int
     blood_group: str
     units_required: int
+    city: str
     latitude: float
     longitude: float
     event_time: str
 
     @staticmethod
-    def create(user_id, blood_group, units_required, latitude, longitude):
+    def create(user_id, blood_group, units_required, city, latitude, longitude):
         return RequestEvent(
             event_id=str(uuid.uuid4()),
             user_id=user_id,
             blood_group=blood_group,
             units_required=units_required,
+            city=city,
             latitude=latitude,
             longitude=longitude,
             event_time=datetime.now(timezone.utc).isoformat()

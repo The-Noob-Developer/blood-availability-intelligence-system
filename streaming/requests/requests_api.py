@@ -12,6 +12,7 @@ def create_requests(request: RequestsRequest):
         user_id=request.user_id,
         blood_group=request.blood_group,
         units_required=request.units_required,
+        city = request.city,
         latitude=request.latitude,
         longitude=request.longitude
     )

@@ -16,6 +16,6 @@ def publish_request(event: dict):
     producer.send(REQUEST_TOPIC, event)
     producer.flush() # Sends all buffered messages and waits until Kafka acknowledges them
 
-    print(f"Published donation event: {event}")
+    print(f"Published Request event: {event}")
 
     producer.close()

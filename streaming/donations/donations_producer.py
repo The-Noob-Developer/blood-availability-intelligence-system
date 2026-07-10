@@ -1,6 +1,6 @@
 from kafka import KafkaProducer
 import json
-from streaming.common.config import KAFKA_BROKER, DONATION_TOPIC
+from streaming.common.config import KAFKA_BROKER, REQUEST_TOPIC
 
 
 def publish_donation(event: dict):
@@ -13,7 +13,7 @@ def publish_donation(event: dict):
         # JSON to String -> String to Encode Binary
     )
 
-    producer.send(DONATION_TOPIC, event)
+    producer.send(REQUEST_TOPIC, event)
     producer.flush() # Sends all buffered messages and waits until Kafka acknowledges them
 
     print(f"Published donation event: {event}")

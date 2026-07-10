@@ -1,7 +1,7 @@
 from kafka import KafkaConsumer
 import json
 import snowflake.connector
-from streaming.common.config import KAFKA_BROKER, DONATION_TOPIC
+from streaming.common.config import KAFKA_BROKER, REQUEST_TOPIC
 from dotenv import load_dotenv
 load_dotenv()
 import os
@@ -29,32 +29,39 @@ cursor = conn.cursor()
 
 
 consumer = KafkaConsumer(
-    DONATION_TOPIC,
+    REQUEST_TOPIC,
     bootstrap_servers=KAFKA_BROKER,
     auto_offset_reset="latest",
     value_deserializer=lambda m: json.loads(m.decode("utf-8"))
     # Decode Binary to string -> String to JSON
 )
 
-print("Waiting for message...")
+print("Waiting for messages...")
 
-# Receive only one message
-message = next(consumer)
-data = message.value
+try:
+    for message in consumer:
+        data = message.value
 
-columns = ", ".join(col.upper() for col in data.keys())
-placeholders = ", ".join(["%s"] * len(data))
+        print(data)
 
-query = f"""
-INSERT INTO REQUEST_EVENT ({columns})
-VALUES ({placeholders})
-"""
+        columns = ", ".join(col.upper() for col in data.keys())
+        placeholders = ", ".join(["%s"] * len(data))
 
-cursor.execute(query, tuple(data.values()))
-conn.commit()
+        query = f"""
+        INSERT INTO BLOOD_REQUEST ({columns})
+        VALUES ({placeholders})
+        """
 
-print("Inserted successfully")
+        cursor.execute(query, tuple(data.values()))
+        conn.commit()
 
-# cursor.close()
-# conn.close()
-# consumer.close()
+        print("Inserted successfully")
+
+except KeyboardInterrupt:
+    print("\nStopping consumer...")
+
+finally:
+    cursor.close()
+    conn.close()
+    consumer.close()
+    print("Consumer closed.")

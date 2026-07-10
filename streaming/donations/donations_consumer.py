@@ -60,7 +60,7 @@ try:
         """
 
         cursor.execute(
-            update_query,
+            update_query, 
             (
                 data["units_donated"],
                 data["blood_bank_id"],
