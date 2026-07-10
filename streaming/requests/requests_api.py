@@ -17,9 +17,13 @@ def create_requests(request: RequestsRequest):
         longitude=request.longitude
     )
 
-    publish_request(event.to_dict())
+    event_payload = event.to_dict()
+    publish_request(event_payload)
 
-    return { # frontend gets this
+    return {
         "message": "Request event published",
+        "request_id": event.event_id,
+        "status": "PENDING",
+        "poll_url": f"/allocations/{event.event_id}",
         "data": request
     }

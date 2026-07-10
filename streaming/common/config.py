@@ -8,6 +8,8 @@ ALLOCATION_TOPIC = "allocations"
 
 INVENTORY_TOPIC = "inventory_updates"
 
+ALLOCATION_RESPONSE_TOPIC = "allocations_response"
+
 ALERT_TOPIC = "alerts"
 
 # PostgreSQL

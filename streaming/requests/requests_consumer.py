@@ -1,7 +1,8 @@
 from kafka import KafkaConsumer
+from kafka import KafkaProducer
 import json
 import snowflake.connector
-from streaming.common.config import KAFKA_BROKER, REQUEST_TOPIC
+from streaming.common.config import KAFKA_BROKER, REQUEST_TOPIC, ALLOCATION_TOPIC
 from dotenv import load_dotenv
 load_dotenv()
 import os
@@ -36,6 +37,11 @@ consumer = KafkaConsumer(
     # Decode Binary to string -> String to JSON
 )
 
+
+producer = KafkaProducer(
+    bootstrap_servers=KAFKA_BROKER,
+    value_serializer=lambda value: json.dumps(value).encode("utf-8")
+)
 print("Waiting for messages...")
 
 try:
@@ -57,6 +63,19 @@ try:
 
         print("Inserted successfully")
 
+        allocation_event = {
+            "event_id": data["event_id"],
+            "blood_group": data["blood_group"],
+            "units_required": data["units_required"],
+            "city": data["city"],
+            "latitude": data["latitude"],
+            "longitude": data["longitude"]
+        }
+        producer.send(ALLOCATION_TOPIC, allocation_event)
+        producer.flush()
+
+        print("Sent request to allocation service")
+
 except KeyboardInterrupt:
     print("\nStopping consumer...")
 
@@ -64,4 +83,5 @@ finally:
     cursor.close()
     conn.close()
     consumer.close()
+    producer.close()
     print("Consumer closed.")
