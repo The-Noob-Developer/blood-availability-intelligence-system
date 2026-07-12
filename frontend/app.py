@@ -1,0 +1,257 @@
+import os
+import time
+from typing import Any, Dict, Optional
+
+import requests
+import streamlit as st
+
+
+REQUEST_API_BASE_URL = os.getenv("REQUEST_API_BASE_URL", "http://127.0.0.1:8002")
+ALLOCATION_API_BASE_URL = os.getenv("ALLOCATION_API_BASE_URL", "http://127.0.0.1:8001")
+DONATION_API_BASE_URL = os.getenv("DONATION_API_BASE_URL", "http://127.0.0.1:8000")
+POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
+
+SUPPORTED_BLOOD_GROUPS = [
+    "A+",
+    "A-",
+    "B+",
+    "B-",
+    "AB+",
+    "AB-",
+    "O+",
+    "O-",
+]
+
+
+st.set_page_config(
+    page_title="Blood Availability Intelligence System",
+    layout="wide",
+)
+
+
+def normalize_base_url(value: str) -> str:
+    return value.rstrip("/")
+
+
+def request_json(method: str, url: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    response = requests.request(method, url, json=payload, timeout=15)
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_allocation(request_id: str) -> Dict[str, Any]:
+    url = f"{normalize_base_url(ALLOCATION_API_BASE_URL)}/allocations/{request_id}"
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
+    return response.json()
+
+
+def submit_request_form(payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"{normalize_base_url(REQUEST_API_BASE_URL)}/requests"
+    return request_json("POST", url, payload)
+
+
+def submit_donation_form(payload: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"{normalize_base_url(DONATION_API_BASE_URL)}/donations"
+    return request_json("POST", url, payload)
+
+
+def render_allocation_result(result: Dict[str, Any]) -> None:
+    status = result.get("status", "UNKNOWN")
+    if status == "PENDING":
+        st.info("Request is still pending. The page will keep checking for an allocation.")
+        return
+
+    if status == "ALLOCATED":
+        cols = st.columns(4)
+        cols[0].metric("Blood Bank ID", result.get("blood_bank_id", "-"))
+        cols[1].metric("Blood Group", result.get("blood_group", "-"))
+        cols[2].metric("Units Allocated", result.get("units_allocated", "-"))
+        cols[3].metric("Request ID", result.get("request_id", "-"))
+
+        st.success("Allocation found.")
+        st.write(
+            {
+                "fulfillment_time": result.get("fulfillment_time"),
+                "blood_bank_name": result.get("blood_bank_name"),
+                "distance_km": result.get("distance_km"),
+            }
+        )
+        return
+
+    st.warning(f"Unexpected status: {status}")
+    st.json(result)
+
+
+def ensure_tracking_state(request_id: str) -> None:
+    st.session_state.active_request_id = request_id
+    st.session_state.tracking_enabled = True
+
+
+def live_poll_active_request() -> None:
+    request_id = st.session_state.get("active_request_id")
+    tracking_enabled = st.session_state.get("tracking_enabled", False)
+    if not request_id or not tracking_enabled:
+        return
+
+    try:
+        result = fetch_allocation(request_id)
+        st.session_state.active_allocation_result = result
+        st.session_state.active_request_status = result.get("status", "UNKNOWN")
+    except requests.RequestException as exc:
+        st.session_state.active_allocation_result = {"status": "ERROR", "error": str(exc)}
+        st.session_state.active_request_status = "ERROR"
+        return
+
+    if st.session_state.active_request_status == "PENDING":
+        time.sleep(POLL_INTERVAL_SECONDS)
+        st.rerun()
+
+
+st.markdown(
+    """
+    <style>
+        .hero {
+            padding: 1.5rem 1.75rem;
+            border-radius: 1.25rem;
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 55%, #0f766e 100%);
+            color: white;
+            margin-bottom: 1.25rem;
+        }
+        .hero h1 {
+            margin: 0;
+            font-size: 2rem;
+        }
+        .hero p {
+            margin: 0.5rem 0 0;
+            opacity: 0.9;
+        }
+        .card {
+            padding: 1rem 1.1rem;
+            border-radius: 1rem;
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            background: rgba(248, 250, 252, 0.94);
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="hero">
+        <h1>Blood Availability Intelligence System</h1>
+        <p>Request blood, donate blood, and track allocation status in one place.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.sidebar:
+    st.header("API Settings")
+    REQUEST_API_BASE_URL = st.text_input("Request API Base URL", value=REQUEST_API_BASE_URL)
+    ALLOCATION_API_BASE_URL = st.text_input("Allocation API Base URL", value=ALLOCATION_API_BASE_URL)
+    DONATION_API_BASE_URL = st.text_input("Donation API Base URL", value=DONATION_API_BASE_URL)
+    POLL_INTERVAL_SECONDS = st.number_input("Poll interval (seconds)", min_value=1, max_value=30, value=POLL_INTERVAL_SECONDS)
+
+    st.divider()
+    st.subheader("Tracking")
+    active_request_id = st.session_state.get("active_request_id")
+    st.write(active_request_id or "No active request")
+    if st.button("Stop tracking", use_container_width=True):
+        st.session_state.tracking_enabled = False
+        st.session_state.active_request_id = None
+        st.session_state.active_allocation_result = None
+        st.session_state.active_request_status = None
+        st.rerun()
+
+tab_request, tab_donate, tab_track = st.tabs(["Request Blood", "Donate Blood", "Track Request"])
+
+with tab_request:
+    st.subheader("Create a blood request")
+    with st.form("request_form", clear_on_submit=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            user_id = st.number_input("User ID", min_value=1, step=1, value=1)
+            blood_group = st.selectbox("Blood Group", SUPPORTED_BLOOD_GROUPS, index=6)
+            city = st.text_input("City", value="Port Blair")
+        with col2:
+            units_required = st.number_input("Units Required", min_value=1, step=1, value=1)
+            latitude = st.number_input("Latitude", value=11.675442, format="%.6f")
+            longitude = st.number_input("Longitude", value=92.747338, format="%.6f")
+
+        submitted = st.form_submit_button("Submit Request", use_container_width=True)
+
+    if submitted:
+        try:
+            payload = {
+                "user_id": int(user_id),
+                "blood_group": blood_group,
+                "city": city,
+                "units_required": int(units_required),
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+            }
+            response = submit_request_form(payload)
+            ensure_tracking_state(response["request_id"])
+            st.success("Request submitted successfully.")
+            st.json(response)
+        except requests.RequestException as exc:
+            st.error(f"Failed to submit request: {exc}")
+
+with tab_donate:
+    st.subheader("Record a donation")
+    with st.form("donation_form", clear_on_submit=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            donor_id = st.number_input("Donor ID", min_value=1, step=1, value=1, key="donor_id")
+            blood_bank_id = st.number_input("Blood Bank ID", min_value=1, step=1, value=101)
+        with col2:
+            donation_group = st.selectbox("Blood Group", SUPPORTED_BLOOD_GROUPS, index=6, key="donation_group")
+            units_donated = st.number_input("Units Donated", min_value=1, step=1, value=1)
+
+        donation_submitted = st.form_submit_button("Submit Donation", use_container_width=True)
+
+    if donation_submitted:
+        try:
+            payload = {
+                "donor_id": int(donor_id),
+                "blood_bank_id": int(blood_bank_id),
+                "blood_group": donation_group,
+                "units_donated": int(units_donated),
+            }
+            response = submit_donation_form(payload)
+            st.success("Donation submitted successfully.")
+            st.json(response)
+        except requests.RequestException as exc:
+            st.error(f"Failed to submit donation: {exc}")
+
+with tab_track:
+    st.subheader("Track a request")
+    manual_request_id = st.text_input("Request ID", value=st.session_state.get("active_request_id", ""))
+    track_clicked = st.button("Track Request", use_container_width=True)
+
+    if track_clicked and manual_request_id and manual_request_id.strip():
+        ensure_tracking_state(manual_request_id.strip())
+
+    current_request_id = st.session_state.get("active_request_id")
+    if current_request_id:
+        st.caption(f"Polling request: {current_request_id}")
+        allocation_result = st.session_state.get("active_allocation_result")
+        if allocation_result:
+            render_allocation_result(allocation_result)
+    else:
+        st.info("Submit a request or enter a request ID to start tracking.")
+
+if st.session_state.get("active_request_id") and st.session_state.get("tracking_enabled", False):
+    st.divider()
+    st.subheader("Live Allocation Status")
+    try:
+        live_poll_active_request()
+        live_result = st.session_state.get("active_allocation_result")
+        if live_result is None:
+            live_result = fetch_allocation(st.session_state.active_request_id)
+            st.session_state.active_allocation_result = live_result
+        render_allocation_result(live_result)
+    except requests.RequestException as exc:
+        st.error(f"Unable to poll allocation status: {exc}")
