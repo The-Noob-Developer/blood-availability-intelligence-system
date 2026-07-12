@@ -4,11 +4,12 @@ from typing import Any, Dict, Optional
 
 import requests
 import streamlit as st
+from browser_geolocation import browser_geolocation
 
 
+DONATION_API_BASE_URL = os.getenv("DONATION_API_BASE_URL", "http://127.0.0.1:8000")
 REQUEST_API_BASE_URL = os.getenv("REQUEST_API_BASE_URL", "http://127.0.0.1:8002")
 ALLOCATION_API_BASE_URL = os.getenv("ALLOCATION_API_BASE_URL", "http://127.0.0.1:8001")
-DONATION_API_BASE_URL = os.getenv("DONATION_API_BASE_URL", "http://127.0.0.1:8000")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
 
 SUPPORTED_BLOOD_GROUPS = [
@@ -27,6 +28,12 @@ st.set_page_config(
     page_title="Blood Availability Intelligence System",
     layout="wide",
 )
+
+
+def init_request_location_state() -> None:
+    st.session_state.setdefault("request_latitude", 11.675442)
+    st.session_state.setdefault("request_longitude", 92.747338)
+    st.session_state.setdefault("request_location_source", "manual")
 
 
 def normalize_base_url(value: str) -> str:
@@ -70,13 +77,14 @@ def render_allocation_result(result: Dict[str, Any]) -> None:
         cols[3].metric("Request ID", result.get("request_id", "-"))
 
         st.success("Allocation found.")
-        st.write(
-            {
-                "fulfillment_time": result.get("fulfillment_time"),
-                "blood_bank_name": result.get("blood_bank_name"),
-                "distance_km": result.get("distance_km"),
-            }
-        )
+        allocation_details = {
+            "fulfillment_time": result.get("fulfillment_time"),
+            "blood_bank_id": result.get("blood_bank_id"),
+            "blood_bank_name": result.get("blood_bank_name"),
+        }
+        if result.get("distance_km") is not None:
+            allocation_details["distance_km"] = result.get("distance_km")
+        st.write(allocation_details)
         return
 
     st.warning(f"Unexpected status: {status}")
@@ -86,6 +94,7 @@ def render_allocation_result(result: Dict[str, Any]) -> None:
 def ensure_tracking_state(request_id: str) -> None:
     st.session_state.active_request_id = request_id
     st.session_state.tracking_enabled = True
+    st.session_state.poll_count = 0
 
 
 def live_poll_active_request() -> None:
@@ -94,7 +103,14 @@ def live_poll_active_request() -> None:
     if not request_id or not tracking_enabled:
         return
 
+    poll_count = st.session_state.get("poll_count", 0)
+    if poll_count >= 30:
+        st.session_state.tracking_enabled = False
+        st.session_state.active_request_status = "TIMEOUT"
+        return
+
     try:
+        st.session_state.poll_count = poll_count + 1
         result = fetch_allocation(request_id)
         st.session_state.active_allocation_result = result
         st.session_state.active_request_status = result.get("status", "UNKNOWN")
@@ -147,6 +163,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+init_request_location_state()
+
 with st.sidebar:
     st.header("API Settings")
     REQUEST_API_BASE_URL = st.text_input("Request API Base URL", value=REQUEST_API_BASE_URL)
@@ -163,12 +181,25 @@ with st.sidebar:
         st.session_state.active_request_id = None
         st.session_state.active_allocation_result = None
         st.session_state.active_request_status = None
+        st.session_state.poll_count = 0
         st.rerun()
 
 tab_request, tab_donate, tab_track = st.tabs(["Request Blood", "Donate Blood", "Track Request"])
 
 with tab_request:
     st.subheader("Create a blood request")
+    st.caption("Use your browser location to auto-fill latitude and longitude.")
+    location_result = browser_geolocation(key="request_location")
+    if location_result and location_result.get("latitude") is not None and location_result.get("longitude") is not None:
+        st.session_state.request_latitude = float(location_result["latitude"])
+        st.session_state.request_longitude = float(location_result["longitude"])
+        st.session_state.request_location_source = "browser"
+        st.success(
+            f"Location captured: {st.session_state.request_latitude:.6f}, {st.session_state.request_longitude:.6f}"
+        )
+    elif location_result and location_result.get("error"):
+        st.error(f"Unable to fetch location: {location_result['error']}")
+
     with st.form("request_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
@@ -177,8 +208,18 @@ with tab_request:
             city = st.text_input("City", value="Port Blair")
         with col2:
             units_required = st.number_input("Units Required", min_value=1, step=1, value=1)
-            latitude = st.number_input("Latitude", value=11.675442, format="%.6f")
-            longitude = st.number_input("Longitude", value=92.747338, format="%.6f")
+            latitude = st.number_input(
+                "Latitude",
+                value=float(st.session_state.request_latitude),
+                format="%.6f",
+            )
+            longitude = st.number_input(
+                "Longitude",
+                value=float(st.session_state.request_longitude),
+                format="%.6f",
+            )
+
+        st.caption(f"Location source: {st.session_state.request_location_source}")
 
         submitted = st.form_submit_button("Submit Request", use_container_width=True)
 

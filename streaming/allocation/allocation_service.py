@@ -142,9 +142,10 @@ try:
             BLOOD_BANK_ID,
             BLOOD_GROUP,
             UNITS_ALLOCATED,
+            DISTANCE_KM,
             FULFILLMENT_TIME
         )
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """
 
         # Temporary fulfillment id
@@ -168,6 +169,7 @@ try:
                 blood_bank_id,
                 request["blood_group"],
                 units_allocated,
+                distance_km,
                 datetime.utcnow().isoformat()
             )
         )

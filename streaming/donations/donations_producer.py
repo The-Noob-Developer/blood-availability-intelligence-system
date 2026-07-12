@@ -4,7 +4,7 @@ from streaming.common.config import KAFKA_BROKER, DONATION_TOPIC
 
 
 def publish_donation(event: dict):
-    print("helooooooo")
+    # print("helooooooo")
     producer = KafkaProducer(
         bootstrap_servers=KAFKA_BROKER, # Tells the producer where Kafka is running
         value_serializer=lambda value: json.dumps(value).encode("utf-8")

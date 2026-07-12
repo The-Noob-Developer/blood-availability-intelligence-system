@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+        font-family: Arial, Helvetica, sans-serif;
+        background: transparent;
+        min-height: 120px;
+      }
+      .wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        min-height: 120px;
+        justify-content: center;
+      }
+      button {
+        background: #0f766e;
+        color: #fff;
+        border: none;
+        border-radius: 0.8rem;
+        padding: 0.75rem 1rem;
+        cursor: pointer;
+        font-size: 0.95rem;
+        font-weight: 600;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .status {
+        color: #49596e;
+        font-size: 0.85rem;
+        min-height: 1.1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <button id="fetch-location" type="button">Fetch My Location</button>
+      <div id="status" class="status"></div>
+    </div>
+
+    <script>
+      const button = document.getElementById("fetch-location");
+      const status = document.getElementById("status");
+      let componentReady = false;
+
+      function setFrameHeight() {
+        window.parent.postMessage(
+          {
+            isStreamlitMessage: true,
+            type: "streamlit:setFrameHeight",
+            height: Math.max(document.body.scrollHeight, 120),
+          },
+          "*"
+        );
+      }
+
+      function setComponentReady() {
+        window.parent.postMessage(
+          {
+            isStreamlitMessage: true,
+            type: "streamlit:componentReady",
+            apiVersion: 1,
+          },
+          "*"
+        );
+      }
+
+      function sendValue(value) {
+        window.parent.postMessage(
+          {
+            isStreamlitMessage: true,
+            type: "streamlit:setComponentValue",
+            value: value,
+          },
+          "*"
+        );
+      }
+
+      function announceReady() {
+        if (componentReady) {
+          return;
+        }
+        setComponentReady();
+        window.setTimeout(setFrameHeight, 50);
+        window.setTimeout(setFrameHeight, 250);
+      }
+
+      window.addEventListener("load", () => {
+        announceReady();
+        window.setInterval(announceReady, 500);
+      });
+
+      window.addEventListener("message", (event) => {
+        const data = event.data || {};
+        if (data.type === "streamlit:render") {
+          componentReady = true;
+          window.setTimeout(setFrameHeight, 0);
+        }
+      });
+
+      window.addEventListener("resize", setFrameHeight);
+
+      button.addEventListener("click", () => {
+        if (!navigator.geolocation) {
+          status.textContent = "Geolocation is not supported by this browser.";
+          return;
+        }
+
+        button.disabled = true;
+        status.textContent = "Fetching current coordinates...";
+
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const payload = {
+              latitude: Number(position.coords.latitude.toFixed(6)),
+              longitude: Number(position.coords.longitude.toFixed(6)),
+              accuracy: position.coords.accuracy,
+            };
+            status.textContent = "Location captured.";
+            sendValue(payload);
+            setFrameHeight();
+            button.disabled = false;
+          },
+          (error) => {
+            status.textContent = "Unable to fetch location: " + error.message;
+            sendValue({
+              error: error.message,
+            });
+            setFrameHeight();
+            button.disabled = false;
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0,
+          }
+        );
+      });
+    </script>
+  </body>
+</html>

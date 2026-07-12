@@ -35,13 +35,17 @@ def get_allocation(request_id: str):
         cursor.execute(
             """
             SELECT
-                REQUEST_ID,
-                BLOOD_BANK_ID,
-                BLOOD_GROUP,
-                UNITS_ALLOCATED,
-                FULFILLMENT_TIME
-            FROM BLOOD_REQUEST_FULFILLMENT
-            WHERE REQUEST_ID = %s
+                f.REQUEST_ID,
+                f.BLOOD_BANK_ID,
+                bb."Blood Bank Name" AS BLOOD_BANK_NAME,
+                f.BLOOD_GROUP,
+                f.UNITS_ALLOCATED,
+                f.DISTANCE_KM,
+                f.FULFILLMENT_TIME
+            FROM BLOOD_REQUEST_FULFILLMENT f
+            LEFT JOIN BLOOD_BANK bb
+                ON bb.BLOOD_BANK_ID = f.BLOOD_BANK_ID
+            WHERE f.REQUEST_ID = %s
             ORDER BY FULFILLMENT_TIME DESC
             LIMIT 1
             """,
@@ -60,9 +64,11 @@ def get_allocation(request_id: str):
             "request_id": row[0],
             "status": "ALLOCATED",
             "blood_bank_id": row[1],
-            "blood_group": row[2],
-            "units_allocated": row[3],
-            "fulfillment_time": row[4],
+            "blood_bank_name": row[2],
+            "blood_group": row[3],
+            "units_allocated": row[4],
+            "distance_km": row[5],
+            "fulfillment_time": row[6],
         }
 
     finally:

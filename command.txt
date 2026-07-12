@@ -1,0 +1,1 @@
+powershell -ExecutionPolicy Bypass -File .\run_all.ps1
