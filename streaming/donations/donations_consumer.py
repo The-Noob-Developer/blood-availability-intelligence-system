@@ -1,9 +1,10 @@
 from kafka import KafkaConsumer
 import json
 import snowflake.connector
-import time
 from dotenv import load_dotenv
 import os
+from collections import defaultdict
+import time
 
 from streaming.common.config import KAFKA_BROKER, DONATION_TOPIC
 
@@ -33,71 +34,103 @@ cursor = conn.cursor()
 consumer = KafkaConsumer(
     DONATION_TOPIC,
     bootstrap_servers=KAFKA_BROKER,
-    auto_offset_reset="latest",
+    group_id="donation-consumer-group",
+    enable_auto_commit=True,
+    auto_offset_reset="earliest",
     value_deserializer=lambda m: json.loads(m.decode("utf-8"))
 )
 
 print("\nDonation Consumer Started...\n")
 
 message_count = 0
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "500"))
+FLUSH_INTERVAL_SEC = int(os.getenv("FLUSH_INTERVAL_SEC", "5"))
+
+# batching buffers
+batch_rows = []
+batch_columns = None
+inventory_delta = defaultdict(int)  # key: (blood_bank_id, blood_group) -> units
+last_flush = time.time()
+
+
+def flush_batch(cursor, conn, batch_rows, batch_columns, inventory_delta):
+    """Flush the current batch_rows and inventory_delta to Snowflake.
+    Returns the new batch_columns value (None).
+    """
+    if not batch_rows:
+        return None
+
+    columns_sql = ", ".join(col.upper() for col in batch_columns)
+    placeholders = ", ".join(["%s"] * len(batch_columns))
+    insert_query = f"INSERT INTO DONATION_EVENT ({columns_sql}) VALUES ({placeholders})"
+
+    try:
+        cursor.executemany(insert_query, batch_rows)
+
+        update_query = (
+            "UPDATE BLOOD_INVENTORY"
+            " SET UNITS_AVAILABLE = UNITS_AVAILABLE + %s"
+            " WHERE BLOOD_BANK_ID = %s AND BLOOD_GROUP = %s"
+        )
+        for (bank_id, group), delta in inventory_delta.items():
+            cursor.execute(update_query, (delta, bank_id, group))
+
+        conn.commit()
+        print(f"Committed batch of {len(batch_rows)} donation rows; updated {len(inventory_delta)} inventory keys")
+
+    except Exception as e:
+        print(f"Batch insert failed during flush: {e}; falling back to single-row inserts")
+        for r in batch_rows:
+            try:
+                cursor.execute(insert_query, r)
+            except Exception as e2:
+                print(f"Failed single insert for row {r}: {e2}")
+        for (bank_id, group), delta in inventory_delta.items():
+            try:
+                cursor.execute(update_query, (delta, bank_id, group))
+            except Exception as e3:
+                print(f"Failed inventory update for {(bank_id, group)}: {e3}")
+        conn.commit()
+
+    # clear buffers
+    batch_rows.clear()
+    inventory_delta.clear()
+    return None
 
 try:
     for message in consumer:
 
-        total_start = time.time()
-
         data = message.value
 
-        kafka_delay = total_start - data["created_at"]
+        # initialize batch columns order from first message in batch
+        if batch_columns is None:
+            batch_columns = list(data.keys())
 
-        db_start = time.time()
+        # prepare row tuple according to batch_columns order
+        row = tuple(data.get(col) for col in batch_columns)
+        batch_rows.append(row)
 
-        columns = ", ".join(col.upper() for col in data.keys())
-        placeholders = ", ".join(["%s"] * len(data))
+        # aggregate inventory update per (blood_bank_id, blood_group)
+        try:
+            inventory_delta[(data["blood_bank_id"], data["blood_group"])] += int(data["units_donated"])
+        except Exception:
+            # fall back to adding as-is if casting fails
+            inventory_delta[(data.get("blood_bank_id"), data.get("blood_group"))] += data.get("units_donated", 0)
 
-        insert_query = f"""
-        INSERT INTO DONATION_EVENT ({columns})
-        VALUES ({placeholders})
-        """
-
-        cursor.execute(insert_query, tuple(data.values()))
-
-        update_query = """
-        UPDATE BLOOD_INVENTORY
-        SET UNITS_AVAILABLE = UNITS_AVAILABLE + %s
-        WHERE BLOOD_BANK_ID = %s
-          AND BLOOD_GROUP = %s;
-        """
-
-        cursor.execute(
-            update_query,
-            (
-                data["units_donated"],
-                data["blood_bank_id"],
-                data["blood_group"],
-            ),
-        )
-
-        conn.commit()
-
-        db_end = time.time()
-
-        db_time = db_end - db_start
-
-        total_time = db_end - data["created_at"]
-
-        message_count += 1
-
-        print("\n" + "=" * 60)
-        print(f"Message Number      : {message_count}")
-        print(f"Donor ID            : {data['donor_id']}")
-        print(f"Kafka Delay         : {kafka_delay:.4f} sec")
-        print(f"Database Time       : {db_time:.4f} sec")
-        print(f"End-to-End Time     : {total_time:.4f} sec")
-        print("=" * 60)
+        # If batch full or flush interval exceeded, flush inserts and aggregated updates
+        if len(batch_rows) >= BATCH_SIZE or (batch_rows and (time.time() - last_flush) >= FLUSH_INTERVAL_SEC):
+            batch_columns = flush_batch(cursor, conn, batch_rows, batch_columns, inventory_delta)
+            last_flush = time.time()
+            # reset batch_columns after flush
+            batch_columns = None
+            continue
 
 except KeyboardInterrupt:
     print("\nStopping consumer...")
+    # flush any remaining rows before exit
+    if batch_rows:
+        batch_columns = flush_batch(cursor, conn, batch_rows, batch_columns, inventory_delta)
+        last_flush = time.time()
 
 finally:
     cursor.close()

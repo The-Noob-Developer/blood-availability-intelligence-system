@@ -4,9 +4,10 @@ import { check, sleep } from 'k6';
 export const options = {
     scenarios: {
         donation_test: {
-            executor: 'constant-vus',
-            vus: 500,          // 500 concurrent users
-            duration: '30s',   // Test duration
+            executor: 'shared-iterations',
+            vus: 50,            // number of concurrent VUs to use
+            iterations: 10000,  // total requests across all VUs
+            maxDuration: '30m', // safety timeout
         },
     },
 

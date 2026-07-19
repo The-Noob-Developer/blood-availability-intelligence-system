@@ -32,6 +32,10 @@ $services = @(
         Script = "`$Host.UI.RawUI.WindowTitle = 'Allocation Service'; Set-Location -LiteralPath '$repoRoot'; & '$pythonExe' -m streaming.allocation.allocation_service"
     },
     @{
+        Title  = "Auth API"
+        Script = "`$Host.UI.RawUI.WindowTitle = 'Auth API'; Set-Location -LiteralPath '$repoRoot'; & '$pythonExe' -m uvicorn streaming.auth.auth_api:app --reload --port 8003"
+    },
+    @{
         Title  = "Frontend"
         Script = "`$Host.UI.RawUI.WindowTitle = 'Frontend'; Set-Location -LiteralPath '$repoRoot'; & '$pythonExe' -m streamlit run frontend/app.py"
     }

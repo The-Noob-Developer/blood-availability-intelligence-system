@@ -10,6 +10,7 @@ from browser_geolocation import browser_geolocation
 DONATION_API_BASE_URL = os.getenv("DONATION_API_BASE_URL", "http://127.0.0.1:8000")
 REQUEST_API_BASE_URL = os.getenv("REQUEST_API_BASE_URL", "http://127.0.0.1:8002")
 ALLOCATION_API_BASE_URL = os.getenv("ALLOCATION_API_BASE_URL", "http://127.0.0.1:8001")
+AUTH_API_BASE_URL = os.getenv("AUTH_API_BASE_URL", "http://127.0.0.1:8003")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
 
 SUPPORTED_BLOOD_GROUPS = [
@@ -36,12 +37,44 @@ def init_request_location_state() -> None:
     st.session_state.setdefault("request_location_source", "manual")
 
 
+def init_auth_state() -> None:
+    st.session_state.setdefault("authenticated_user", None)
+    st.session_state.setdefault("auth_message", None)
+
+
+def sync_auth_state_from_query_params() -> None:
+    params = st.query_params
+    auth_status = params.get("auth")
+    if auth_status == "success":
+        email = params.get("email", "")
+        user_id = params.get("user_id", "")
+        if isinstance(email, list):
+            email = email[0] if email else ""
+        if isinstance(user_id, list):
+            user_id = user_id[0] if user_id else ""
+
+        if email or user_id:
+            st.session_state.authenticated_user = {
+                "email": email,
+                "id": int(user_id) if str(user_id).isdigit() else None,
+            }
+            st.session_state.auth_message = f"Signed in as {email or user_id}"
+    elif auth_status == "logged_out":
+        st.session_state.authenticated_user = None
+        st.session_state.auth_message = "Signed out"
+
+
 def normalize_base_url(value: str) -> str:
     return value.rstrip("/")
 
 
-def request_json(method: str, url: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    response = requests.request(method, url, json=payload, timeout=15)
+def request_json(
+    method: str,
+    url: str,
+    payload: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    response = requests.request(method, url, json=payload, headers=headers, timeout=15)
     response.raise_for_status()
     return response.json()
 
@@ -55,7 +88,12 @@ def fetch_allocation(request_id: str) -> Dict[str, Any]:
 
 def submit_request_form(payload: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{normalize_base_url(REQUEST_API_BASE_URL)}/requests"
-    return request_json("POST", url, payload)
+    headers = {}
+    auth_user = st.session_state.get("authenticated_user") or {}
+    auth_user_id = auth_user.get("id")
+    if auth_user_id is not None:
+        headers["X-Authenticated-User-Id"] = str(auth_user_id)
+    return request_json("POST", url, payload, headers=headers)
 
 
 def submit_donation_form(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -164,8 +202,26 @@ st.markdown(
 )
 
 init_request_location_state()
+init_auth_state()
+sync_auth_state_from_query_params()
 
 with st.sidebar:
+    st.header("Authentication")
+    if st.session_state.get("authenticated_user"):
+        user = st.session_state.authenticated_user
+        st.success(f"Signed in as {user.get('email') or user.get('id')}")
+        if st.button("Sign out"):
+            st.session_state.authenticated_user = None
+            st.session_state.auth_message = "Signed out"
+            st.link_button("Logout on server", f"{normalize_base_url(AUTH_API_BASE_URL)}/auth/logout")
+    else:
+        st.info("Sign in with Google before submitting a request.")
+        st.link_button("Sign in with Google", f"{normalize_base_url(AUTH_API_BASE_URL)}/auth/login")
+
+    if st.session_state.get("auth_message"):
+        st.caption(st.session_state.auth_message)
+
+    st.divider()
     st.header("API Settings")
     REQUEST_API_BASE_URL = st.text_input("Request API Base URL", value=REQUEST_API_BASE_URL)
     ALLOCATION_API_BASE_URL = st.text_input("Allocation API Base URL", value=ALLOCATION_API_BASE_URL)
@@ -203,7 +259,9 @@ with tab_request:
     with st.form("request_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
-            user_id = st.number_input("User ID", min_value=1, step=1, value=1)
+            auth_user = st.session_state.get("authenticated_user") or {}
+            default_user_id = auth_user.get("id") or 1
+            request_user_id = st.number_input("User ID", min_value=1, step=1, value=int(default_user_id))
             blood_group = st.selectbox("Blood Group", SUPPORTED_BLOOD_GROUPS, index=6)
             city = st.text_input("City", value="Port Blair")
         with col2:
@@ -224,21 +282,38 @@ with tab_request:
         submitted = st.form_submit_button("Submit Request", use_container_width=True)
 
     if submitted:
-        try:
-            payload = {
-                "user_id": int(user_id),
-                "blood_group": blood_group,
-                "city": city,
-                "units_required": int(units_required),
-                "latitude": float(latitude),
-                "longitude": float(longitude),
-            }
-            response = submit_request_form(payload)
-            ensure_tracking_state(response["request_id"])
-            st.success("Request submitted successfully.")
-            st.json(response)
-        except requests.RequestException as exc:
-            st.error(f"Failed to submit request: {exc}")
+        auth_user = st.session_state.get("authenticated_user") or {}
+
+        # Add logging to inspect the authentication state upon submission
+        with st.expander("Debug: Authentication State on Submit"):
+            st.write("`st.session_state.authenticated_user`:")
+            st.json(st.session_state.get("authenticated_user", "Not found in session state"))
+            st.write("`auth_user` variable used for check:")
+            st.json(auth_user)
+            st.write("Value of `auth_user.get('id')`:")
+            st.write(auth_user.get("id"))
+
+        if not auth_user.get("id"):
+            st.warning("Please sign in with Google first so the request is linked to your account.")
+        else:
+            try:
+                # The `if` block ensures `auth_user.get("id")` is not None here,
+                # but we cast to int safely to satisfy type checkers and add robustness.
+                user_id = int(auth_user.get("id", 0))
+                payload = {
+                    "user_id": user_id,
+                    "blood_group": blood_group,
+                    "city": city,
+                    "units_required": int(units_required),
+                    "latitude": float(latitude),
+                    "longitude": float(longitude),
+                }
+                response = submit_request_form(payload)
+                ensure_tracking_state(response["request_id"])
+                st.success("Request submitted successfully.")
+                st.json(response)
+            except requests.RequestException as exc:
+                st.error(f"Failed to submit request: {exc}")
 
 with tab_donate:
     st.subheader("Record a donation")

@@ -17,3 +17,9 @@ spark-warehouse/
 .DS_Store
 
 database/.ipynb_checkpoints/
+
+.env.auth_backup
+
+.env
+.env.*
+!.env.example
