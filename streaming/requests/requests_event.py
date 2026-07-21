@@ -5,7 +5,7 @@ import uuid
 @dataclass
 class RequestEvent:
     event_id: str
-    user_id: int
+    user_id: str
     blood_group: str
     units_required: int
     city: str

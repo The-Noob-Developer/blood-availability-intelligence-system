@@ -1,5 +1,7 @@
 import os
+import re
 import time
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 import requests
@@ -24,9 +26,17 @@ SUPPORTED_BLOOD_GROUPS = [
     "O-",
 ]
 
+STATUS_STYLE = {
+    "PENDING": {"icon": "⏳", "label": "Searching for a match", "color": "#f59e0b"},
+    "ALLOCATED": {"icon": "✅", "label": "Blood bank found", "color": "#16a34a"},
+    "TIMEOUT": {"icon": "⚠️", "label": "Taking longer than expected", "color": "#dc2626"},
+    "ERROR": {"icon": "❌", "label": "Something went wrong", "color": "#dc2626"},
+    "UNKNOWN": {"icon": "🔄", "label": "Checking status", "color": "#64748b"},
+}
+
 
 st.set_page_config(
-    page_title="Blood Availability Intelligence System",
+    page_title="Blood Availability Intelligence System - HRG",
     layout="wide",
 )
 
@@ -64,7 +74,7 @@ def sync_auth_state_from_query_params() -> None:
                 "email": email,
                 "id": user_id if user_id else None,
             }
-            st.session_state.auth_message = f"Signed in as {email or user_id}"
+            st.session_state.auth_message = None
 
         # Clear the auth params from the URL so a rerun doesn't keep
         # re-processing the same query string.
@@ -77,6 +87,39 @@ def sync_auth_state_from_query_params() -> None:
 
 def normalize_base_url(value: str) -> str:
     return value.rstrip("/")
+
+
+def derive_display_name(email: str) -> str:
+    """Builds a friendly display name out of an email address, since the
+    auth provider only gives us an email + id, not a real name field."""
+    if not email:
+        return "Guest"
+    local_part = email.split("@")[0]
+    cleaned = re.sub(r"[._\-]+", " ", local_part).strip()
+    cleaned = re.sub(r"\d+", "", cleaned).strip()
+    if not cleaned:
+        cleaned = local_part
+    return cleaned.title()
+
+
+def derive_initials(display_name: str) -> str:
+    parts = [p for p in display_name.split() if p]
+    if not parts:
+        return "?"
+    if len(parts) == 1:
+        return parts[0][:2].upper()
+    return (parts[0][0] + parts[1][0]).upper()
+
+
+def format_datetime(iso_str: Optional[str]) -> str:
+    if not iso_str:
+        return "-"
+    try:
+        cleaned = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(cleaned)
+        return dt.strftime("%b %d, %Y · %I:%M %p")
+    except (ValueError, TypeError):
+        return iso_str
 
 
 def render_same_tab_link_button(label: str, url: str) -> None:
@@ -153,32 +196,117 @@ def submit_donation_form(payload: Dict[str, Any]) -> Dict[str, Any]:
     return request_json("POST", url, payload, headers=headers)
 
 
+def render_status_card(status: str, extra_html: str = "") -> None:
+    style = STATUS_STYLE.get(status, STATUS_STYLE["UNKNOWN"])
+    st.markdown(
+        f"""
+        <div style="
+            border-left: 4px solid {style['color']};
+            background: rgba(148, 163, 184, 0.08);
+            border-radius: 0.75rem;
+            padding: 1rem 1.2rem;
+            margin-bottom: 0.75rem;
+        ">
+            <div style="font-size: 1.4rem; line-height: 1;">{style['icon']}&nbsp; <span style="font-size:1.05rem; font-weight:600; vertical-align:middle;">{style['label']}</span></div>
+            {extra_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_allocation_result(result: Dict[str, Any]) -> None:
     status = result.get("status", "UNKNOWN")
+
     if status == "PENDING":
-        st.info("Request is still pending. The page will keep checking for an allocation.")
+        render_status_card(
+            "PENDING",
+            "<div style='opacity:0.75; margin-top:0.35rem;'>We're matching your request with the nearest blood bank. This page updates automatically.</div>",
+        )
+        return
+
+    if status in ("ERROR", "TIMEOUT"):
+        detail = result.get("error", "Please try tracking again in a moment.")
+        render_status_card(
+            status,
+            f"<div style='opacity:0.75; margin-top:0.35rem;'>{detail}</div>",
+        )
         return
 
     if status == "ALLOCATED":
-        cols = st.columns(4)
-        cols[0].metric("Blood Bank ID", result.get("blood_bank_id", "-"))
-        cols[1].metric("Blood Group", result.get("blood_group", "-"))
-        cols[2].metric("Units Allocated", result.get("units_allocated", "-"))
-        cols[3].metric("Request ID", result.get("request_id", "-"))
+        bank_name = result.get("blood_bank_name") or f"Blood Bank #{result.get('blood_bank_id', '-')}"
+        blood_group = result.get("blood_group", "-")
+        units = result.get("units_allocated", "-")
+        distance = result.get("distance_km")
+        fulfillment_time = format_datetime(result.get("fulfillment_time"))
 
-        st.success("Allocation found.")
-        allocation_details = {
-            "fulfillment_time": result.get("fulfillment_time"),
-            "blood_bank_id": result.get("blood_bank_id"),
-            "blood_bank_name": result.get("blood_bank_name"),
-        }
-        if result.get("distance_km") is not None:
-            allocation_details["distance_km"] = result.get("distance_km")
-        st.write(allocation_details)
+        render_status_card("ALLOCATED")
+
+        st.markdown(
+            f"""
+            <div style="
+                border: 1px solid rgba(148, 163, 184, 0.25);
+                border-radius: 1rem;
+                padding: 1.25rem 1.4rem;
+                background: rgba(248, 250, 252, 0.9);
+                margin-bottom: 0.75rem;
+            ">
+                <div style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.9rem;">🏥 {bank_name}</div>
+                <div style="display:flex; flex-wrap:wrap; gap:1.75rem;">
+                    <div>
+                        <div style="font-size:0.8rem; opacity:0.6;">Blood Group</div>
+                        <div style="font-size:1.15rem; font-weight:600;">🩸 {blood_group}</div>
+                    </div>
+                    <div>
+                        <div style="font-size:0.8rem; opacity:0.6;">Units Allocated</div>
+                        <div style="font-size:1.15rem; font-weight:600;">{units}</div>
+                    </div>
+                    {"<div><div style='font-size:0.8rem; opacity:0.6;'>Distance</div><div style='font-size:1.15rem; font-weight:600;'>📍 " + f"{distance:.1f} km" + "</div></div>" if distance is not None else ""}
+                    <div>
+                        <div style="font-size:0.8rem; opacity:0.6;">Confirmed</div>
+                        <div style="font-size:1.15rem; font-weight:600;">🕒 {fulfillment_time}</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        ref = result.get("request_id", "")
+        if ref:
+            st.caption(f"Reference: {ref[-8:].upper()}")
         return
 
-    st.warning(f"Unexpected status: {status}")
-    st.json(result)
+    render_status_card("UNKNOWN")
+    with st.expander("Details"):
+        st.json(result)
+
+
+def render_sidebar_tracking_card() -> None:
+    request_id = st.session_state.get("active_request_id")
+    if not request_id:
+        st.caption("No active request being tracked yet.")
+        return
+
+    status = st.session_state.get("active_request_status") or "PENDING"
+    style = STATUS_STYLE.get(status, STATUS_STYLE["UNKNOWN"])
+    short_ref = request_id[-8:].upper()
+
+    st.markdown(
+        f"""
+        <div style="
+            border-left: 4px solid {style['color']};
+            background: rgba(148, 163, 184, 0.08);
+            border-radius: 0.6rem;
+            padding: 0.7rem 0.9rem;
+        ">
+            <div style="font-size: 1.3rem;">{style['icon']}</div>
+            <div style="font-weight: 600; margin-top: 0.15rem;">{style['label']}</div>
+            <div style="font-size: 0.75rem; opacity: 0.65; margin-top: 0.2rem;">Ref: {short_ref}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def ensure_tracking_state(request_id: str) -> None:
@@ -257,11 +385,36 @@ init_request_location_state()
 init_auth_state()
 sync_auth_state_from_query_params()
 
+authenticated_user = st.session_state.get("authenticated_user")
+display_name = derive_display_name((authenticated_user or {}).get("email", ""))
+initials = derive_initials(display_name)
+
+# --- Top user greeting bar ---
+if authenticated_user:
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:0.85rem; margin-bottom:1.1rem;">
+            <div style="
+                width: 46px; height: 46px; border-radius: 50%;
+                background: linear-gradient(135deg, #1e3a8a, #0f766e);
+                color: white; display:flex; align-items:center; justify-content:center;
+                font-weight:700; font-size:1.05rem; flex-shrink:0;
+            ">{initials}</div>
+            <div>
+                <div style="font-weight:700; font-size:1.1rem;">Welcome, {display_name}</div>
+                <div style="font-size:0.85rem; opacity:0.6;">{authenticated_user.get('email', '')}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+else:
+    st.info("👋 Sign in with Google from the sidebar to request or donate blood.")
+
 with st.sidebar:
     st.header("Authentication")
-    if st.session_state.get("authenticated_user"):
-        user = st.session_state.authenticated_user
-        st.success(f"Signed in as {user.get('email') or user.get('id')}")
+    if authenticated_user:
+        st.success(f"Signed in as {display_name}")
         if st.button("Sign out"):
             st.session_state.authenticated_user = None
             st.session_state.auth_message = "Signed out"
@@ -274,33 +427,27 @@ with st.sidebar:
         render_same_tab_link_button(
             "Sign in with Google", f"{normalize_base_url(AUTH_API_BASE_URL)}/auth/login"
         )
-
-    if st.session_state.get("auth_message"):
-        st.caption(st.session_state.auth_message)
-
-    st.divider()
-    st.header("API Settings")
-    REQUEST_API_BASE_URL = st.text_input("Request API Base URL", value=REQUEST_API_BASE_URL)
-    ALLOCATION_API_BASE_URL = st.text_input("Allocation API Base URL", value=ALLOCATION_API_BASE_URL)
-    DONATION_API_BASE_URL = st.text_input("Donation API Base URL", value=DONATION_API_BASE_URL)
-    POLL_INTERVAL_SECONDS = st.number_input("Poll interval (seconds)", min_value=1, max_value=30, value=POLL_INTERVAL_SECONDS)
+        if st.session_state.get("auth_message"):
+            st.caption(st.session_state.auth_message)
 
     st.divider()
-    st.subheader("Tracking")
-    active_request_id = st.session_state.get("active_request_id")
-    st.write(active_request_id or "No active request")
-    if st.button("Stop tracking", use_container_width=True):
-        st.session_state.tracking_enabled = False
-        st.session_state.active_request_id = None
-        st.session_state.active_allocation_result = None
-        st.session_state.active_request_status = None
-        st.session_state.poll_count = 0
-        st.rerun()
+    st.subheader("📡 Tracking")
+    render_sidebar_tracking_card()
+    if st.session_state.get("active_request_id"):
+        if st.button("Stop tracking", use_container_width=True):
+            st.session_state.tracking_enabled = False
+            st.session_state.active_request_id = None
+            st.session_state.active_allocation_result = None
+            st.session_state.active_request_status = None
+            st.session_state.poll_count = 0
+            st.rerun()
 
 tab_request, tab_donate, tab_track = st.tabs(["Request Blood", "Donate Blood", "Track Request"])
 
 with tab_request:
     st.subheader("Create a blood request")
+    if authenticated_user:
+        st.caption(f"Requesting as **{display_name}**")
     st.caption("Use your browser location to auto-fill latitude and longitude.")
     location_result = browser_geolocation(key="request_location")
     if location_result and location_result.get("latitude") is not None and location_result.get("longitude") is not None:
@@ -316,14 +463,6 @@ with tab_request:
     with st.form("request_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
-            auth_user = st.session_state.get("authenticated_user") or {}
-            default_user_id = auth_user.get("id") or ""
-            # User ID is a UUID string tied to the authenticated Google account,
-            # not a number, so this is a disabled text field rather than a
-            # number_input. It's derived from the session, not hand-entered.
-            request_user_id = st.text_input(
-                "User ID", value=str(default_user_id), disabled=True
-            )
             blood_group = st.selectbox("Blood Group", SUPPORTED_BLOOD_GROUPS, index=6)
             city = st.text_input("City", value="Port Blair")
         with col2:
@@ -346,15 +485,6 @@ with tab_request:
     if submitted:
         auth_user = st.session_state.get("authenticated_user") or {}
 
-        # Add logging to inspect the authentication state upon submission
-        with st.expander("Debug: Authentication State on Submit"):
-            st.write("`st.session_state.authenticated_user`:")
-            st.json(st.session_state.get("authenticated_user", "Not found in session state"))
-            st.write("`auth_user` variable used for check:")
-            st.json(auth_user)
-            st.write("Value of `auth_user.get('id')`:")
-            st.write(auth_user.get("id"))
-
         if not auth_user.get("id"):
             st.warning("Please sign in with Google first so the request is linked to your account.")
         else:
@@ -369,24 +499,28 @@ with tab_request:
                     "latitude": float(latitude),
                     "longitude": float(longitude),
                 }
+
                 response = submit_request_form(payload)
                 ensure_tracking_state(response["request_id"])
-                st.success("Request submitted successfully.")
-                st.json(response)
+                st.success("🎉 Your request has been submitted! We're finding the nearest match for you.")
+                st.caption(f"Reference: {response['request_id'][-8:].upper()}")
             except requests.RequestException as exc:
-                st.error(f"Failed to submit request: {exc}")
+                error_detail = None
+                if exc.response is not None:
+                    try:
+                        error_detail = exc.response.json().get("detail", exc.response.text)
+                    except ValueError:
+                        error_detail = exc.response.text
+
+                st.error(f"Failed to submit request: {error_detail or exc}")
 
 with tab_donate:
     st.subheader("Record a donation")
+    if authenticated_user:
+        st.caption(f"Donating as **{display_name}**")
     with st.form("donation_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
-            auth_user = st.session_state.get("authenticated_user") or {}
-            default_user_id = auth_user.get("id") or ""
-            # Donor ID is the same UUID as the authenticated user's ID.
-            donor_id = st.text_input(
-                "Donor ID", value=str(default_user_id), key="donor_id", disabled=True
-            )
             blood_bank_id = st.number_input("Blood Bank ID", min_value=1, step=1, value=101)
         with col2:
             donation_group = st.selectbox("Blood Group", SUPPORTED_BLOOD_GROUPS, index=6, key="donation_group")
@@ -407,14 +541,17 @@ with tab_donate:
                     "units_donated": int(units_donated),
                 }
                 response = submit_donation_form(payload)
-                st.success("Donation submitted successfully.")
-                st.json(response)
+                st.success(f"🙏 Thank you, {display_name}! Your donation has been recorded.")
             except requests.RequestException as exc:
                 st.error(f"Failed to submit donation: {exc}")
 
 with tab_track:
     st.subheader("Track a request")
-    manual_request_id = st.text_input("Request ID", value=st.session_state.get("active_request_id", ""))
+    manual_request_id = st.text_input(
+        "Request reference or ID",
+        value=st.session_state.get("active_request_id", ""),
+        placeholder="Paste your request reference here",
+    )
     track_clicked = st.button("Track Request", use_container_width=True)
 
     if track_clicked and manual_request_id and manual_request_id.strip():
@@ -422,12 +559,12 @@ with tab_track:
 
     current_request_id = st.session_state.get("active_request_id")
     if current_request_id:
-        st.caption(f"Polling request: {current_request_id}")
+        st.caption(f"Tracking reference: {current_request_id[-8:].upper()}")
         allocation_result = st.session_state.get("active_allocation_result")
         if allocation_result:
             render_allocation_result(allocation_result)
     else:
-        st.info("Submit a request or enter a request ID to start tracking.")
+        st.info("Submit a request or enter a request reference to start tracking.")
 
 if st.session_state.get("active_request_id") and st.session_state.get("tracking_enabled", False):
     st.divider()

@@ -25,11 +25,7 @@ def get_current_user(
         return user
 
     if x_authenticated_user_id:
-        try:
-            user_id = int(x_authenticated_user_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Invalid X-Authenticated-User-Id") from exc
-        return {"id": user_id, "source": "header"}
+        return {"id": x_authenticated_user_id, "source": "header"}
 
     raise HTTPException(status_code=401, detail="Not authenticated")
 
