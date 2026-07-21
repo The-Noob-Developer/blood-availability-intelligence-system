@@ -7,7 +7,7 @@ import time
 @dataclass
 class DonationEvent:
     event_id: str
-    donor_id: int
+    donor_id: str
     blood_bank_id: int
     blood_group: str
     units_donated: int

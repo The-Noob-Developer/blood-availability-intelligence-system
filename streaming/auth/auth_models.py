@@ -13,7 +13,7 @@ class UserCreate(BaseModel):
 
 
 class UserOut(BaseModel):
-    id: int
+    id: str
     email: EmailStr
     full_name: Optional[str] = None
     given_name: Optional[str] = None

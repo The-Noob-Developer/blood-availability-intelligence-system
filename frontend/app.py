@@ -43,6 +43,12 @@ def init_auth_state() -> None:
 
 
 def sync_auth_state_from_query_params() -> None:
+    """Reads the auth callback query params (?auth=success&email=...&user_id=...)
+    and stores them in session state.
+
+    Note: user_id is a UUID string (Snowflake's auth_user.id is UUID_STRING()-backed),
+    not an integer, so it is stored and used as-is — no int() coercion anywhere.
+    """
     params = st.query_params
     auth_status = params.get("auth")
     if auth_status == "success":
@@ -56,16 +62,55 @@ def sync_auth_state_from_query_params() -> None:
         if email or user_id:
             st.session_state.authenticated_user = {
                 "email": email,
-                "id": int(user_id) if str(user_id).isdigit() else None,
+                "id": user_id if user_id else None,
             }
             st.session_state.auth_message = f"Signed in as {email or user_id}"
+
+        # Clear the auth params from the URL so a rerun doesn't keep
+        # re-processing the same query string.
+        st.query_params.clear()
     elif auth_status == "logged_out":
         st.session_state.authenticated_user = None
         st.session_state.auth_message = "Signed out"
+        st.query_params.clear()
 
 
 def normalize_base_url(value: str) -> str:
     return value.rstrip("/")
+
+
+def render_same_tab_link_button(label: str, url: str) -> None:
+    """Render a button-styled link that navigates in the SAME browser tab.
+
+    st.link_button always opens a new tab, which spins up a brand new
+    Streamlit session. That new session receives the OAuth callback and
+    gets marked as authenticated, while the original tab (where the user
+    actually submits requests/donations) never learns about it. A plain
+    anchor with target="_self" keeps the whole redirect round-trip inside
+    the same session.
+    """
+    st.markdown(
+        f"""
+        <a href="{url}" target="_self" style="text-decoration: none;">
+            <div style="
+                display: inline-block;
+                width: 100%;
+                box-sizing: border-box;
+                text-align: center;
+                padding: 0.5rem 1rem;
+                border-radius: 0.5rem;
+                border: 1px solid rgba(49, 51, 63, 0.2);
+                background-color: #ffffff;
+                color: #262730;
+                font-weight: 500;
+                cursor: pointer;
+            ">
+                {label}
+            </div>
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def request_json(
@@ -98,7 +143,14 @@ def submit_request_form(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def submit_donation_form(payload: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{normalize_base_url(DONATION_API_BASE_URL)}/donations"
-    return request_json("POST", url, payload)
+    headers = {}
+    auth_user = st.session_state.get("authenticated_user") or {}
+    auth_user_id = auth_user.get("id")
+    if auth_user_id is not None:
+        # Although the backend may not use this header, we send it for consistency
+        # with the request submission flow.
+        headers["X-Authenticated-User-Id"] = str(auth_user_id)
+    return request_json("POST", url, payload, headers=headers)
 
 
 def render_allocation_result(result: Dict[str, Any]) -> None:
@@ -213,10 +265,15 @@ with st.sidebar:
         if st.button("Sign out"):
             st.session_state.authenticated_user = None
             st.session_state.auth_message = "Signed out"
-            st.link_button("Logout on server", f"{normalize_base_url(AUTH_API_BASE_URL)}/auth/logout")
+            st.rerun()
+        render_same_tab_link_button(
+            "Logout on server", f"{normalize_base_url(AUTH_API_BASE_URL)}/auth/logout"
+        )
     else:
         st.info("Sign in with Google before submitting a request.")
-        st.link_button("Sign in with Google", f"{normalize_base_url(AUTH_API_BASE_URL)}/auth/login")
+        render_same_tab_link_button(
+            "Sign in with Google", f"{normalize_base_url(AUTH_API_BASE_URL)}/auth/login"
+        )
 
     if st.session_state.get("auth_message"):
         st.caption(st.session_state.auth_message)
@@ -260,8 +317,13 @@ with tab_request:
         col1, col2 = st.columns(2)
         with col1:
             auth_user = st.session_state.get("authenticated_user") or {}
-            default_user_id = auth_user.get("id") or 1
-            request_user_id = st.number_input("User ID", min_value=1, step=1, value=int(default_user_id))
+            default_user_id = auth_user.get("id") or ""
+            # User ID is a UUID string tied to the authenticated Google account,
+            # not a number, so this is a disabled text field rather than a
+            # number_input. It's derived from the session, not hand-entered.
+            request_user_id = st.text_input(
+                "User ID", value=str(default_user_id), disabled=True
+            )
             blood_group = st.selectbox("Blood Group", SUPPORTED_BLOOD_GROUPS, index=6)
             city = st.text_input("City", value="Port Blair")
         with col2:
@@ -297,9 +359,8 @@ with tab_request:
             st.warning("Please sign in with Google first so the request is linked to your account.")
         else:
             try:
-                # The `if` block ensures `auth_user.get("id")` is not None here,
-                # but we cast to int safely to satisfy type checkers and add robustness.
-                user_id = int(auth_user.get("id", 0))
+                # user_id is a UUID string — no int() coercion.
+                user_id = auth_user.get("id")
                 payload = {
                     "user_id": user_id,
                     "blood_group": blood_group,
@@ -320,7 +381,12 @@ with tab_donate:
     with st.form("donation_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
-            donor_id = st.number_input("Donor ID", min_value=1, step=1, value=1, key="donor_id")
+            auth_user = st.session_state.get("authenticated_user") or {}
+            default_user_id = auth_user.get("id") or ""
+            # Donor ID is the same UUID as the authenticated user's ID.
+            donor_id = st.text_input(
+                "Donor ID", value=str(default_user_id), key="donor_id", disabled=True
+            )
             blood_bank_id = st.number_input("Blood Bank ID", min_value=1, step=1, value=101)
         with col2:
             donation_group = st.selectbox("Blood Group", SUPPORTED_BLOOD_GROUPS, index=6, key="donation_group")
@@ -329,18 +395,22 @@ with tab_donate:
         donation_submitted = st.form_submit_button("Submit Donation", use_container_width=True)
 
     if donation_submitted:
-        try:
-            payload = {
-                "donor_id": int(donor_id),
-                "blood_bank_id": int(blood_bank_id),
-                "blood_group": donation_group,
-                "units_donated": int(units_donated),
-            }
-            response = submit_donation_form(payload)
-            st.success("Donation submitted successfully.")
-            st.json(response)
-        except requests.RequestException as exc:
-            st.error(f"Failed to submit donation: {exc}")
+        auth_user = st.session_state.get("authenticated_user") or {}
+        if not auth_user.get("id"):
+            st.warning("Please sign in with Google first so the donation is linked to your account.")
+        else:
+            try:
+                payload = {
+                    "donor_id": auth_user.get("id"),  # UUID string, no int() coercion
+                    "blood_bank_id": int(blood_bank_id),
+                    "blood_group": donation_group,
+                    "units_donated": int(units_donated),
+                }
+                response = submit_donation_form(payload)
+                st.success("Donation submitted successfully.")
+                st.json(response)
+            except requests.RequestException as exc:
+                st.error(f"Failed to submit donation: {exc}")
 
 with tab_track:
     st.subheader("Track a request")
